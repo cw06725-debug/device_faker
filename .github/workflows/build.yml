@@ -1,145 +1,69 @@
-name: Build Device Faker Module
+name: Build Samsung DEFEX Device Faker
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - 'src/**'
-      - "Cargo.*"
-      - 'device_faker_cli/**'
-      - 'module/**'
-      - 'webui/**'
-      - '.github/workflows/build.yml'
-  pull_request:
-    paths:
-      - 'src/**'
-      - "Cargo.*"
-      - 'device_faker_cli/**'
-      - 'module/**'
-      - 'webui/**'
-      - '.github/workflows/build.yml'
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Checkout repository
+      - name: Checkout fork
         uses: actions/checkout@v5
 
-      - name: Update module.prop version info
+      - name: Checkout v1.5.0 baseline
         run: |
-          SHORT_HASH=$(git rev-parse --short HEAD)
-          TODAY=$(TZ='Asia/Shanghai' date +%Y%m%d)
-          RUN_NUMBER=${{ github.run_number }}
-          sed -i "s/^version=\(.*\)/version=\1 (${RUN_NUMBER}-${SHORT_HASH}-release)/" module/module.prop
-          sed -i "s/^versionCode=.*/versionCode=${TODAY}/" module/module.prop
+          git fetch --tags --force
+          git checkout v1.5.0
+
+      - name: Apply Samsung DEFEX patch
+        run: |
+          patch -p1 < samsung-defex/device_faker_v1.5.0_samsung_defex.patch
+
+      - name: Mark Samsung test build
+        run: |
+          sed -i 's/^name=.*/name=Device Faker Samsung DEFEX/' module/module.prop
+          sed -i 's/^version=.*/version=v1.5.0-samsung-defex1/' module/module.prop
+          sed -i 's/^versionCode=.*/versionCode=2026082301/' module/module.prop
+          sed -i '/^updateJson=/d' module/module.prop
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
-        id: setup-ndk
         with:
           ndk-version: r29
           add-to-path: true
 
-      - name: Setup Rust toolchain
+      - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rust-src
           toolchain: nightly
+          components: rust-src
           targets: aarch64-linux-android
-      
+
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
           node-version: 'lts/*'
-          cache: 'npm'
+          cache: npm
           cache-dependency-path: webui/package-lock.json
-          
+
       - name: Install build dependencies
         run: |
           sudo apt update
           sudo apt install -y gcc-multilib
           cargo install cargo-ndk --locked
 
-      - name: Type check webui
-        run: |
-          cd webui
-          npm ci
-          npm run type-check
-
-      - name: Build device_faker
+      - name: Build installable release ZIP
         run: |
           cargo run --package xtask -- build -r
+          test -f 'output/device_faker-(release).zip'
+          cp 'output/device_faker-(release).zip' \
+             'output/Device_Faker_v1.5.0_Samsung_DEFEX.zip'
+          unzip -l 'output/Device_Faker_v1.5.0_Samsung_DEFEX.zip' | head -80
 
-      - name: Install UPX
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y upx
-
-      - name: Upload artifact
+      - name: Upload KernelSU install ZIP
         uses: actions/upload-artifact@v6
         with:
-          name: device_faker
-          path: module/
-      
-      - name: Upload
-        if: github.event_name == 'push'
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
-          MESSAGE_THREAD_ID: ${{ secrets.MESSAGE_THREAD_ID }}
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
-          COMMIT_AUTHOR: ${{ github.event.head_commit.author.name }}
-          RUN_NUMBER: ${{ github.run_number }}
-          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
-          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          MEDIA_JSON=$(python3 - <<'PY'
-          import json
-          import os
-          import re
+          name: Device_Faker_v1.5.0_Samsung_DEFEX
+          path: output/Device_Faker_v1.5.0_Samsung_DEFEX.zip
+          if-no-files-found: error
 
-          def escape_md2(value: str) -> str:
-              """Escape MarkdownV2 special characters in user-provided text."""
-              value = value.replace("\\", "\\\\")
-              return re.sub(r"([_*\[\]()~`>#+\-=|{}.!])", r"\\\1", value)
-
-          commit_msg = escape_md2(os.environ.get("COMMIT_MSG", ""))
-          author = escape_md2(os.environ.get("COMMIT_AUTHOR", ""))
-          run_number = escape_md2(os.environ.get("RUN_NUMBER", ""))
-          commit_url = os.environ.get("COMMIT_URL", "")
-          workflow_url = os.environ.get("WORKFLOW_URL", "")
-
-          # Only escape parentheses inside URLs for MarkdownV2 link syntax
-          commit_url_escaped = commit_url.replace(")", "\\)")
-          workflow_url_escaped = workflow_url.replace(")", "\\)")
-
-          caption = (
-              f"🚀 *Device\\_Faker Build \\#{run_number}*\n"
-              f"📋 *Build Info:*\n"
-              f"[Commit]({commit_url_escaped})\n"
-              f"📝 *Commit Message:*\n"
-              f"```\n{commit_msg}\n```\n"
-              f"by `{author}`\n\n"
-              f"🔗 [View Workflow]({workflow_url_escaped})"
-          )
-
-          media = [
-              {
-                  "type": "document",
-                  "media": "attach://file",
-                  "parse_mode": "MarkdownV2",
-                  "caption": caption,
-              }
-          ]
-
-          print(json.dumps(media))
-          PY
-          )
-
-          curl -v "https://api.telegram.org/bot${BOT_TOKEN}/sendMediaGroup" \
-            -F "chat_id=${CHAT_ID}" \
-            -F "message_thread_id=${MESSAGE_THREAD_ID}" \
-            -F "media=${MEDIA_JSON}" \
-            -F "file=@output/device_faker-(release).zip"
