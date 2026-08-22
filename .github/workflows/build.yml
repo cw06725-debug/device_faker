@@ -19,51 +19,181 @@ jobs:
           echo "===== Git revision ====="
           git rev-parse HEAD
           git status --short
-          echo
-          echo "===== samsung-defex directory ====="
-          ls -la samsung-defex || true
 
-      - name: Show Samsung DEFEX source context
+      - name: Apply Samsung DEFEX workaround
         run: |
-          echo "========================================"
-          echo "===== companion request handler ====="
-          echo "========================================"
-          grep -n -A 20 -B 20 "CompanionRequest::CpuSpoofUnmount" src/companion.rs || true
+          python3 <<'PY'
+          from pathlib import Path
 
-          echo
-          echo "========================================"
-          echo "===== CompanionRequest enum ====="
-          echo "========================================"
-          grep -n -A 40 -B 15 "enum CompanionRequest" src/companion.rs || true
+          companion = Path("src/companion.rs")
+          lib = Path("src/lib.rs")
 
-          echo
-          echo "========================================"
-          echo "===== CompanionResponse struct ====="
-          echo "========================================"
-          grep -n -A 40 -B 15 "struct CompanionResponse" src/companion.rs || true
+          c = companion.read_text(encoding="utf-8")
+          l = lib.read_text(encoding="utf-8")
 
-          echo
-          echo "========================================"
-          echo "===== load_config call ====="
-          echo "========================================"
-          grep -n -A 25 -B 25 "load_config" src/lib.rs || true
+          old = '''        CompanionRequest::CpuSpoofUnmount(request) => {
+              crate::cpu_spoof::handle_companion_cpu_unmount(stream, request);
+          }
+          CompanionRequest::WriteLog(request) => {'''
+          new = '''        CompanionRequest::CpuSpoofUnmount(request) => {
+              crate::cpu_spoof::handle_companion_cpu_unmount(stream, request);
+          }
+          CompanionRequest::ReadConfig => {
+              const CONFIG_PATH: &str = "/data/adb/device_faker/config/config.toml";
+              let response = match fs::read_to_string(CONFIG_PATH) {
+                  Ok(content) => CompanionResponse {
+                      status: 0,
+                      message: Some(content),
+                      backups: None,
+                  },
+                  Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                      CompanionResponse::ok()
+                  }
+                  Err(err) => {
+                      error!("Companion failed to read config at {CONFIG_PATH}: {err}");
+                      CompanionResponse::err(format!(
+                          "Failed to read config at {CONFIG_PATH}: {err}"
+                      ))
+                  }
+              };
+              if let Err(e) = write_companion_response(stream, &response) {
+                  warn!("Failed to write companion response: {e}");
+              }
+          }
+          CompanionRequest::WriteLog(request) => {'''
+          if old not in c:
+              raise SystemExit("ERROR: companion handler anchor not found")
+          c = c.replace(old, new, 1)
 
-          echo
-          echo "========================================"
-          echo "===== CONFIG_PATH ====="
-          echo "========================================"
-          grep -n -A 20 -B 20 "CONFIG_PATH" src/lib.rs || true
+          old = '''    CpuSpoof(CpuSpoofRequest),
+              CpuSpoofUnmount(CpuSpoofUnmountRequest),
+              WriteLog(WriteLogRequest),'''
+          new = '''    CpuSpoof(CpuSpoofRequest),
+              CpuSpoofUnmount(CpuSpoofUnmountRequest),
+              ReadConfig,
+              WriteLog(WriteLogRequest),'''
+          if old not in c:
+              raise SystemExit("ERROR: CompanionRequest enum anchor not found")
+          c = c.replace(old, new, 1)
 
-          echo
-          echo "========================================"
-          echo "===== send_companion_command ====="
-          echo "========================================"
-          grep -n -A 25 -B 25 "send_companion_command" src/companion.rs || true
+          old = "        let config = match load_config() {"
+          new = "        let config = match load_config_via_companion(api) {"
+          if old not in l:
+              raise SystemExit("ERROR: load_config() call anchor not found")
+          l = l.replace(old, new, 1)
 
-      - name: Stop after source dump
+          old = '''fn load_config() -> anyhow::Result<Option<Config>> {
+              if !Path::new(CONFIG_PATH).exists() {
+                  return Ok(None);
+              }
+
+              let config_content = fs::read_to_string(CONFIG_PATH)
+                  .with_context(|| format!("Failed to read config at {CONFIG_PATH}"))?;
+              let config = Config::from_toml(&config_content)?;
+              Ok(Some(config))
+          }'''
+          new = '''fn load_config_via_companion(
+              api: &mut ZygiskApi<V4>,
+          ) -> anyhow::Result<Option<Config>> {
+              let request = companion::CompanionRequest::ReadConfig;
+              let response = companion::send_companion_command(api, &request)?;
+
+              if response.status != 0 {
+                  let message = response
+                      .message
+                      .as_deref()
+                      .unwrap_or("companion config read failed");
+                  anyhow::bail!("{message}");
+              }
+
+              let Some(config_content) = response.message else {
+                  return Ok(None);
+              };
+
+              let config = Config::from_toml(&config_content)?;
+              Ok(Some(config))
+          }'''
+          if old not in l:
+              raise SystemExit("ERROR: load_config() function anchor not found")
+          l = l.replace(old, new, 1)
+
+          l = l.replace(
+              "use std::{collections::HashMap, fs, path::Path};",
+              "use std::collections::HashMap;",
+              1,
+          )
+          l = l.replace("use anyhow::Context;\n", "", 1)
+          l = l.replace(
+              'const CONFIG_PATH: &str = "/data/adb/device_faker/config/config.toml";\n\n',
+              "",
+              1,
+          )
+
+          companion.write_text(c, encoding="utf-8")
+          lib.write_text(l, encoding="utf-8")
+
+          print("Samsung DEFEX workaround applied successfully.")
+          PY
+
+          echo "===== diff check ====="
+          git diff --check
+          git diff -- src/companion.rs src/lib.rs
+
+      - name: Mark Samsung test build
         run: |
-          echo "Source context collected successfully."
-          echo "Please inspect the output of:"
-          echo "Show Samsung DEFEX source context"
-          echo
-          echo "Do not continue to build yet."
+          if [ -f module/module.prop ]; then
+            sed -i 's/^name=.*/name=Device Faker Samsung DEFEX/' module/module.prop
+            sed -i 's/^version=.*/version=v1.5.0-samsung-defex/' module/module.prop
+            sed -i 's/^versionCode=.*/versionCode=2026082303/' module/module.prop
+            sed -i '/^updateJson=/d' module/module.prop
+          fi
+          cat module/module.prop || true
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r29
+          add-to-path: true
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+          components: rust-src
+          targets: aarch64-linux-android
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 'lts/*'
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Install build dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y gcc-multilib
+          cargo install cargo-ndk --locked
+
+      - name: Build installable release ZIP
+        run: |
+          cargo run --package xtask -- build -r
+
+          echo "===== build output ====="
+          find output -maxdepth 2 -type f -print || true
+
+          test -f 'output/device_faker-(release).zip'
+
+          cp 'output/device_faker-(release).zip' \
+             'output/Device_Faker_Samsung_DEFEX.zip'
+
+          echo "===== module ZIP contents ====="
+          unzip -l 'output/Device_Faker_Samsung_DEFEX.zip' | head -100
+
+      - name: Upload KernelSU install ZIP
+        uses: actions/upload-artifact@v6
+        with:
+          name: Device_Faker_Samsung_DEFEX
+          path: output/Device_Faker_Samsung_DEFEX.zip
+          if-no-files-found: error
+
