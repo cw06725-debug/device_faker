@@ -14,32 +14,25 @@ jobs:
           ref: main
           submodules: recursive
 
-      - name: Show source revision
-        run: |
-          echo "===== Git revision ====="
-          git rev-parse HEAD
-          git status --short
-
       - name: Apply Samsung DEFEX workaround
+        shell: bash
         run: |
-          python3 <<'PY'
+          python3 - <<'PY'
           from pathlib import Path
+          import re
 
-          companion = Path("src/companion.rs")
-          lib = Path("src/lib.rs")
+          companion_path = Path("src/companion.rs")
+          lib_path = Path("src/lib.rs")
 
-          c = companion.read_text(encoding="utf-8")
-          l = lib.read_text(encoding="utf-8")
+          c = companion_path.read_text(encoding="utf-8")
+          l = lib_path.read_text(encoding="utf-8")
 
-          old = '''        CompanionRequest::CpuSpoofUnmount(request) => {
-              crate::cpu_spoof::handle_companion_cpu_unmount(stream, request);
-          }
-          CompanionRequest::WriteLog(request) => {'''
-          new = '''        CompanionRequest::CpuSpoofUnmount(request) => {
-              crate::cpu_spoof::handle_companion_cpu_unmount(stream, request);
-          }
-          CompanionRequest::ReadConfig => {
-              const CONFIG_PATH: &str = "/data/adb/device_faker/config/config.toml";
+          marker = "        CompanionRequest::WriteLog(request) => {"
+          if marker not in c:
+              raise SystemExit("ERROR: WriteLog handler marker not found")
+
+          read_handler = """        CompanionRequest::ReadConfig => {
+              const CONFIG_PATH: &str = \"/data/adb/device_faker/config/config.toml\";
               let response = match fs::read_to_string(CONFIG_PATH) {
                   Ok(content) => CompanionResponse {
                       status: 0,
@@ -50,60 +43,56 @@ jobs:
                       CompanionResponse::ok()
                   }
                   Err(err) => {
-                      error!("Companion failed to read config at {CONFIG_PATH}: {err}");
+                      error!(\"Companion failed to read config at {CONFIG_PATH}: {err}\");
                       CompanionResponse::err(format!(
-                          "Failed to read config at {CONFIG_PATH}: {err}"
+                          \"Failed to read config at {CONFIG_PATH}: {err}\"
                       ))
                   }
               };
+
               if let Err(e) = write_companion_response(stream, &response) {
-                  warn!("Failed to write companion response: {e}");
+                  warn!(\"Failed to write companion response: {e}\");
               }
           }
-          CompanionRequest::WriteLog(request) => {'''
-          if old not in c:
-              raise SystemExit("ERROR: companion handler anchor not found")
-          c = c.replace(old, new, 1)
+"""
+          c = c.replace(marker, read_handler + marker, 1)
 
-          old = '''    CpuSpoof(CpuSpoofRequest),
-              CpuSpoofUnmount(CpuSpoofUnmountRequest),
-              WriteLog(WriteLogRequest),'''
-          new = '''    CpuSpoof(CpuSpoofRequest),
-              CpuSpoofUnmount(CpuSpoofUnmountRequest),
-              ReadConfig,
-              WriteLog(WriteLogRequest),'''
-          if old not in c:
-              raise SystemExit("ERROR: CompanionRequest enum anchor not found")
-          c = c.replace(old, new, 1)
+          enum_marker = "    WriteLog(WriteLogRequest),"
+          if enum_marker not in c:
+              raise SystemExit("ERROR: CompanionRequest WriteLog enum marker not found")
+          c = c.replace(enum_marker, "    ReadConfig,\n" + enum_marker, 1)
 
-          old = "        let config = match load_config() {"
-          new = "        let config = match load_config_via_companion(api) {"
-          if old not in l:
-              raise SystemExit("ERROR: load_config() call anchor not found")
-          l = l.replace(old, new, 1)
+          call_marker = "let config = match load_config() {"
+          if call_marker not in l:
+              raise SystemExit("ERROR: load_config call not found")
+          l = l.replace(
+              call_marker,
+              "let config = match load_config_via_companion(api) {",
+              1,
+          )
 
-          old = '''fn load_config() -> anyhow::Result<Option<Config>> {
-              if !Path::new(CONFIG_PATH).exists() {
-                  return Ok(None);
-              }
+          pattern = re.compile(
+              r'fn load_config\(\) -> anyhow::Result<Option<Config>> \{\n'
+              r'.*?'
+              r'\n\}\n'
+              r'(?=fn configure_log_level)',
+              re.S,
+          )
 
-              let config_content = fs::read_to_string(CONFIG_PATH)
-                  .with_context(|| format!("Failed to read config at {CONFIG_PATH}"))?;
-              let config = Config::from_toml(&config_content)?;
-              Ok(Some(config))
-          }'''
-          new = '''fn load_config_via_companion(
+          replacement = """fn load_config_via_companion(
               api: &mut ZygiskApi<V4>,
           ) -> anyhow::Result<Option<Config>> {
               let request = companion::CompanionRequest::ReadConfig;
               let response = companion::send_companion_command(api, &request)?;
 
               if response.status != 0 {
-                  let message = response
-                      .message
-                      .as_deref()
-                      .unwrap_or("companion config read failed");
-                  anyhow::bail!("{message}");
+                  anyhow::bail!(
+                      \"{}\",
+                      response
+                          .message
+                          .as_deref()
+                          .unwrap_or(\"companion config read failed\")
+                  );
               }
 
               let Some(config_content) = response.message else {
@@ -112,10 +101,12 @@ jobs:
 
               let config = Config::from_toml(&config_content)?;
               Ok(Some(config))
-          }'''
-          if old not in l:
-              raise SystemExit("ERROR: load_config() function anchor not found")
-          l = l.replace(old, new, 1)
+          }
+"""
+
+          l, count = pattern.subn(replacement, l, count=1)
+          if count != 1:
+              raise SystemExit(f"ERROR: load_config function replacement count={count}")
 
           l = l.replace(
               "use std::{collections::HashMap, fs, path::Path};",
@@ -124,15 +115,15 @@ jobs:
           )
           l = l.replace("use anyhow::Context;\n", "", 1)
           l = l.replace(
-              'const CONFIG_PATH: &str = "/data/adb/device_faker/config/config.toml";\n\n',
+              'const CONFIG_PATH: &str = "/data/adb/device_faker/config/config.toml";\n',
               "",
               1,
           )
 
-          companion.write_text(c, encoding="utf-8")
-          lib.write_text(l, encoding="utf-8")
+          companion_path.write_text(c, encoding="utf-8")
+          lib_path.write_text(l, encoding="utf-8")
 
-          print("Samsung DEFEX workaround applied successfully.")
+          print("Samsung DEFEX workaround applied.")
           PY
 
           echo "===== diff check ====="
@@ -141,13 +132,11 @@ jobs:
 
       - name: Mark Samsung test build
         run: |
-          if [ -f module/module.prop ]; then
-            sed -i 's/^name=.*/name=Device Faker Samsung DEFEX/' module/module.prop
-            sed -i 's/^version=.*/version=v1.5.0-samsung-defex/' module/module.prop
-            sed -i 's/^versionCode=.*/versionCode=2026082303/' module/module.prop
-            sed -i '/^updateJson=/d' module/module.prop
-          fi
-          cat module/module.prop || true
+          sed -i 's/^name=.*/name=Device Faker Samsung DEFEX/' module/module.prop
+          sed -i 's/^version=.*/version=v1.5.0-samsung-defex/' module/module.prop
+          sed -i 's/^versionCode=.*/versionCode=2026082304/' module/module.prop
+          sed -i '/^updateJson=/d' module/module.prop
+          cat module/module.prop
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -178,16 +167,14 @@ jobs:
       - name: Build installable release ZIP
         run: |
           cargo run --package xtask -- build -r
-
-          echo "===== build output ====="
+          echo "===== output files ====="
           find output -maxdepth 2 -type f -print || true
 
           test -f 'output/device_faker-(release).zip'
-
           cp 'output/device_faker-(release).zip' \
              'output/Device_Faker_Samsung_DEFEX.zip'
 
-          echo "===== module ZIP contents ====="
+          echo "===== ZIP contents ====="
           unzip -l 'output/Device_Faker_Samsung_DEFEX.zip' | head -100
 
       - name: Upload KernelSU install ZIP
