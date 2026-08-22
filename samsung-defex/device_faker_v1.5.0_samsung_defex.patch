@@ -1,0 +1,158 @@
+diff --git a/src/companion.rs b/src/companion.rs
+index 0000000..1111111 100644
+--- a/src/companion.rs
++++ b/src/companion.rs
+@@ -146,6 +146,20 @@ pub fn handle_companion_request(stream: &mut UnixStream) {
+         CompanionRequest::CpuSpoofUnmount(request) => {
+             crate::cpu_spoof::handle_companion_cpu_unmount(stream, request);
+         }
++        CompanionRequest::ReadConfig => {
++            const CONFIG_PATH: &str = "/data/adb/device_faker/config/config.toml";
++            let response = match fs::read_to_string(CONFIG_PATH) {
++                Ok(content) => CompanionResponse::ok_with_data(content),
++                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
++                    CompanionResponse::ok()
++                }
++                Err(err) => {
++                    error!("Companion failed to read config at {CONFIG_PATH}: {err}");
++                    CompanionResponse::err(format!(
++                        "Failed to read config at {CONFIG_PATH}: {err}"
++                    ))
++                }
++            };
++            if let Err(e) = write_companion_response(stream, &response) {
++                warn!("Failed to write companion response: {e}");
++            }
++        }
+         CompanionRequest::WriteLog(request) => {
+             let response = match write_log_lines(request) {
+                 Ok(_) => CompanionResponse::ok(),
+@@ -701,14 +715,17 @@ pub enum CompanionRequest {
+     Restore(RestoreRequest),
+     CpuSpoof(CpuSpoofRequest),
+     CpuSpoofUnmount(CpuSpoofUnmountRequest),
++    ReadConfig,
+     WriteLog(WriteLogRequest),
+ }
+ #[derive(Serialize, Deserialize, Debug)]
+ pub struct CompanionResponse {
+     pub status: i32,
+     pub message: Option<String>,
+     pub backups: Option<HashMap<String, String>>,
++    pub data: Option<String>,
+ }
+
+ impl CompanionResponse {
+@@ -716,6 +733,7 @@ impl CompanionResponse {
+             status: 0,
+             message: None,
+             backups: None,
++            data: None,
+         }
+     }
+
+@@ -724,6 +742,7 @@ impl CompanionResponse {
+             status: -1,
+             message: Some(msg.into()),
+             backups: None,
++            data: None,
+         }
+     }
+     pub fn ok_with_backups(backups: HashMap<String, String>) -> Self {
+@@ -731,7 +750,17 @@ impl CompanionResponse {
+             status: 0,
+             message: None,
+             backups: Some(backups),
++            data: None,
++        }
++    }
++
++    pub fn ok_with_data(data: String) -> Self {
++        Self {
++            status: 0,
++            message: None,
++            backups: None,
++            data: Some(data),
+         }
+     }
+ }
+diff --git a/src/lib.rs b/src/lib.rs
+index 0000000..2222222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -7,9 +7,7 @@ mod file_logger;
+ mod hooks;
+
+-use std::{collections::HashMap, fs, path::Path};
+-use anyhow::Context;
++use std::collections::HashMap;
+ use companion::{handle_companion_request, spoof_system_props_via_companion};
+ use config::Config;
+ use cpu_spoof::{apply_cpu_spoof, apply_cpu_spoof_unmount};
+@@ -21,8 +19,6 @@ use zygisk_api::{
+     raw::ZygiskRaw,
+ };
+
+-const CONFIG_PATH: &str = "/data/adb/device_faker/config/config.toml";
+-
+ #[derive(Default)]
+ struct MyModule;
+
+@@ -90,7 +86,7 @@ impl MyModule {
+
+         // companion 侧现在自己管理会话状态和恢复逻辑；
+         // Zygisk 模块侧不再需要跨应用恢复（ACTIVE_RESET_SESSION 已移除）。
+-        let config = match load_config() {
++        let config = match load_config_via_companion(api) {
+             Ok(Some(cfg)) => cfg,
+             Ok(None) => {
+                 api.set_option(ZygiskOption::DlCloseModuleLibrary);
+@@ -259,15 +255,25 @@ impl MyModule {
+     }
+ }
+
+-fn load_config() -> anyhow::Result<Option<Config>> {
+-    if !Path::new(CONFIG_PATH).exists() {
+-        return Ok(None);
++fn load_config_via_companion(api: &mut ZygiskApi<V4>) -> anyhow::Result<Option<Config>> {
++    let request = companion::CompanionRequest::ReadConfig;
++    let response = companion::send_companion_command(api, &request)?;
++
++    if response.status != 0 {
++        anyhow::bail!(
++            "{}",
++            response
++                .message
++                .unwrap_or_else(|| "companion config read failed".to_string())
++        );
+     }
+
+-    let config_content = fs::read_to_string(CONFIG_PATH)
+-        .with_context(|| format!("Failed to read config at {CONFIG_PATH}"))?;
++    let Some(config_content) = response.data else {
++        return Ok(None);
++    };
++
+     let config = Config::from_toml(&config_content)?;
+     Ok(Some(config))
+ }
++
+ fn configure_log_level(debug_enabled: bool) {
+     let level = if debug_enabled {
+         LevelFilter::Info
+diff --git a/module/module.prop b/module/module.prop
+index 0000000..3333333 100644
+--- a/module/module.prop
++++ b/module/module.prop
+@@ -1,7 +1,6 @@
+ id=device_faker
+-name=Device Faker
+-version=v1.5.0
+-versionCode=20260801
++name=Device Faker Samsung DEFEX
++version=v1.5.0-samsung-defex1
++versionCode=2026082301
+ author=酷安@瓦力喀/GitHub@Seyud
+-description=使用Zygisk实现自定义配置对应用伪装机型
+-updateJson=https://gitee.com/Seyud/device_faker/raw/master/Update.json
++description=Samsung DEFEX兼容测试版：由Zygisk companion读取config.toml
