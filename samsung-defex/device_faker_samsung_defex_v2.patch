@@ -1,0 +1,66 @@
+diff --git a/src/companion.rs b/src/companion.rs
+--- a/src/companion.rs
++++ b/src/companion.rs
+@@ -203,6 +203,16 @@ pub fn handle_companion_request(stream: &mut UnixStream) {
+         CompanionRequest::CpuSpoofUnmount(request) => {
+             crate::cpu_spoof::handle_companion_cpu_unmount(stream, request);
+         }
++        CompanionRequest::ReadConfig => {
++            const CONFIG_PATH: &str = "/data/adb/device_faker/config/config.toml";
++            let response = match fs::read_to_string(CONFIG_PATH) {
++                Ok(content) => CompanionResponse { status: 0, message: Some(content), backups: None },
++                Err(err) => CompanionResponse::err(format!("Failed to read config at {CONFIG_PATH}: {err}")),
++            };
++            if let Err(e) = write_companion_response(stream, &response) {
++                warn!("Failed to write companion response: {e}");
++            }
++        }
+         CompanionRequest::WriteLog(request) => {
+             let response = match write_log_lines(request) {
+                 Ok(_) => CompanionResponse::ok(),
+@@ -879,6 +889,7 @@ pub enum CompanionRequest {
+     Restore(RestoreRequest),
+     CpuSpoof(CpuSpoofRequest),
+     CpuSpoofUnmount(CpuSpoofUnmountRequest),
++    ReadConfig,
+     WriteLog(WriteLogRequest),
+ }
+ #[derive(Serialize, Deserialize, Debug)]
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -90,7 +90,7 @@ impl MyModule {
+
+         // companion 侧现在自己管理会话状态和恢复逻辑；
+         // Zygisk 模块侧不再需要跨应用恢复（ACTIVE_RESET_SESSION 已移除）。
+-        let config = match load_config() {
++        let config = match load_config_via_companion(api) {
+             Ok(Some(cfg)) => cfg,
+             Ok(None) => {
+                 api.set_option(ZygiskOption::DlCloseModuleLibrary);
+@@ -277,13 +277,20 @@ impl MyModule {
+     }
+ }
+
+-fn load_config() -> anyhow::Result<Option<Config>> {
+-    if !Path::new(CONFIG_PATH).exists() {
+-        return Ok(None);
++fn load_config_via_companion(api: &mut ZygiskApi<V4>) -> anyhow::Result<Option<Config>> {
++    let request = companion::CompanionRequest::ReadConfig;
++    let response = companion::send_companion_command(api, &request)?;
++
++    if response.status != 0 {
++        anyhow::bail!(
++            "{}",
++            response.message.as_deref().unwrap_or("companion config read failed")
++        );
+     }
+
+-    let config_content = fs::read_to_string(CONFIG_PATH)
+-        .with_context(|| format!("Failed to read config at {CONFIG_PATH}"))?;
++    let Some(config_content) = response.message else {
++        return Ok(None);
++    };
+     let config = Config::from_toml(&config_content)?;
+     Ok(Some(config))
+ }
