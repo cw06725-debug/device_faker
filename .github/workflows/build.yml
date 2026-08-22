@@ -22,11 +22,10 @@ jobs:
 
       - name: Check Samsung DEFEX patch
         run: |
-          git apply --check samsung-defex/device_faker_v1.5.0_samsung_defex.patch
-
+          git apply --check samsung-defex/device_faker_samsung_defex_v2.patch
       - name: Apply Samsung DEFEX patch
         run: |
-          git apply samsung-defex/device_faker_v1.5.0_samsung_defex.patch
+          git apply samsung-defex/device_faker_samsung_defex_v2.patch
           git diff --check
           git diff --stat
 
