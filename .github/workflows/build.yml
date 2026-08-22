@@ -17,116 +17,8 @@ jobs:
       - name: Apply Samsung DEFEX workaround
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          companion_path = Path("src/companion.rs")
-          lib_path = Path("src/lib.rs")
-
-          c = companion_path.read_text(encoding="utf-8")
-          l = lib_path.read_text(encoding="utf-8")
-
-          marker = "        CompanionRequest::WriteLog(request) => {"
-          if marker not in c:
-              raise SystemExit("ERROR: WriteLog handler marker not found")
-
-          read_handler = """        CompanionRequest::ReadConfig => {
-              const CONFIG_PATH: &str = \"/data/adb/device_faker/config/config.toml\";
-              let response = match fs::read_to_string(CONFIG_PATH) {
-                  Ok(content) => CompanionResponse {
-                      status: 0,
-                      message: Some(content),
-                      backups: None,
-                  },
-                  Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                      CompanionResponse::ok()
-                  }
-                  Err(err) => {
-                      error!(\"Companion failed to read config at {CONFIG_PATH}: {err}\");
-                      CompanionResponse::err(format!(
-                          \"Failed to read config at {CONFIG_PATH}: {err}\"
-                      ))
-                  }
-              };
-
-              if let Err(e) = write_companion_response(stream, &response) {
-                  warn!(\"Failed to write companion response: {e}\");
-              }
-          }
-"""
-          c = c.replace(marker, read_handler + marker, 1)
-
-          enum_marker = "    WriteLog(WriteLogRequest),"
-          if enum_marker not in c:
-              raise SystemExit("ERROR: CompanionRequest WriteLog enum marker not found")
-          c = c.replace(enum_marker, "    ReadConfig,\n" + enum_marker, 1)
-
-          call_marker = "let config = match load_config() {"
-          if call_marker not in l:
-              raise SystemExit("ERROR: load_config call not found")
-          l = l.replace(
-              call_marker,
-              "let config = match load_config_via_companion(api) {",
-              1,
-          )
-
-          pattern = re.compile(
-              r'fn load_config\(\) -> anyhow::Result<Option<Config>> \{\n'
-              r'.*?'
-              r'\n\}\n'
-              r'(?=fn configure_log_level)',
-              re.S,
-          )
-
-          replacement = """fn load_config_via_companion(
-              api: &mut ZygiskApi<V4>,
-          ) -> anyhow::Result<Option<Config>> {
-              let request = companion::CompanionRequest::ReadConfig;
-              let response = companion::send_companion_command(api, &request)?;
-
-              if response.status != 0 {
-                  anyhow::bail!(
-                      \"{}\",
-                      response
-                          .message
-                          .as_deref()
-                          .unwrap_or(\"companion config read failed\")
-                  );
-              }
-
-              let Some(config_content) = response.message else {
-                  return Ok(None);
-              };
-
-              let config = Config::from_toml(&config_content)?;
-              Ok(Some(config))
-          }
-"""
-
-          l, count = pattern.subn(replacement, l, count=1)
-          if count != 1:
-              raise SystemExit(f"ERROR: load_config function replacement count={count}")
-
-          l = l.replace(
-              "use std::{collections::HashMap, fs, path::Path};",
-              "use std::collections::HashMap;",
-              1,
-          )
-          l = l.replace("use anyhow::Context;\n", "", 1)
-          l = l.replace(
-              'const CONFIG_PATH: &str = "/data/adb/device_faker/config/config.toml";\n',
-              "",
-              1,
-          )
-
-          companion_path.write_text(c, encoding="utf-8")
-          lib_path.write_text(l, encoding="utf-8")
-
-          print("Samsung DEFEX workaround applied.")
-          PY
-
-          echo "===== diff check ====="
+          echo 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCByZQoKY29tcGFuaW9uX3BhdGggPSBQYXRoKCdzcmMvY29tcGFuaW9uLnJzJykKbGliX3BhdGggPSBQYXRoKCdzcmMvbGliLnJzJykKYyA9IGNvbXBhbmlvbl9wYXRoLnJlYWRfdGV4dChlbmNvZGluZz0ndXRmLTgnKQpsID0gbGliX3BhdGgucmVhZF90ZXh0KGVuY29kaW5nPSd1dGYtOCcpCgptYXJrZXIgPSAnICAgICAgICBDb21wYW5pb25SZXF1ZXN0OjpXcml0ZUxvZyhyZXF1ZXN0KSA9PiB7JwppZiBtYXJrZXIgbm90IGluIGM6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCdFUlJPUjogV3JpdGVMb2cgaGFuZGxlciBtYXJrZXIgbm90IGZvdW5kJykKcmVhZF9oYW5kbGVyID0gJycnICAgICAgICBDb21wYW5pb25SZXF1ZXN0OjpSZWFkQ29uZmlnID0+IHsKICAgICAgICAgICAgY29uc3QgQ09ORklHX1BBVEg6ICZzdHIgPSAiL2RhdGEvYWRiL2RldmljZV9mYWtlci9jb25maWcvY29uZmlnLnRvbWwiOwogICAgICAgICAgICBsZXQgcmVzcG9uc2UgPSBtYXRjaCBmczo6cmVhZF90b19zdHJpbmcoQ09ORklHX1BBVEgpIHsKICAgICAgICAgICAgICAgIE9rKGNvbnRlbnQpID0+IENvbXBhbmlvblJlc3BvbnNlIHsKICAgICAgICAgICAgICAgICAgICBzdGF0dXM6IDAsCiAgICAgICAgICAgICAgICAgICAgbWVzc2FnZTogU29tZShjb250ZW50KSwKICAgICAgICAgICAgICAgICAgICBiYWNrdXBzOiBOb25lLAogICAgICAgICAgICAgICAgfSwKICAgICAgICAgICAgICAgIEVycihlcnIpIGlmIGVyci5raW5kKCkgPT0gc3RkOjppbzo6RXJyb3JLaW5kOjpOb3RGb3VuZCA9PiB7CiAgICAgICAgICAgICAgICAgICAgQ29tcGFuaW9uUmVzcG9uc2U6Om9rKCkKICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgIEVycihlcnIpID0+IHsKICAgICAgICAgICAgICAgICAgICBlcnJvciEoIkNvbXBhbmlvbiBmYWlsZWQgdG8gcmVhZCBjb25maWcgYXQge0NPTkZJR19QQVRIfToge2Vycn0iKTsKICAgICAgICAgICAgICAgICAgICBDb21wYW5pb25SZXNwb25zZTo6ZXJyKGZvcm1hdCEoCiAgICAgICAgICAgICAgICAgICAgICAgICJGYWlsZWQgdG8gcmVhZCBjb25maWcgYXQge0NPTkZJR19QQVRIfToge2Vycn0iCiAgICAgICAgICAgICAgICAgICAgKSkKICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgfTsKCiAgICAgICAgICAgIGlmIGxldCBFcnIoZSkgPSB3cml0ZV9jb21wYW5pb25fcmVzcG9uc2Uoc3RyZWFtLCAmcmVzcG9uc2UpIHsKICAgICAgICAgICAgICAgIHdhcm4hKCJGYWlsZWQgdG8gd3JpdGUgY29tcGFuaW9uIHJlc3BvbnNlOiB7ZX0iKTsKICAgICAgICAgICAgfQogICAgICAgIH0KJycnCmMgPSBjLnJlcGxhY2UobWFya2VyLCByZWFkX2hhbmRsZXIgKyBtYXJrZXIsIDEpCgplbnVtX21hcmtlciA9ICcgICAgV3JpdGVMb2coV3JpdGVMb2dSZXF1ZXN0KSwnCmlmIGVudW1fbWFya2VyIG5vdCBpbiBjOgogICAgcmFpc2UgU3lzdGVtRXhpdCgnRVJST1I6IENvbXBhbmlvblJlcXVlc3QgZW51bSBtYXJrZXIgbm90IGZvdW5kJykKYyA9IGMucmVwbGFjZShlbnVtX21hcmtlciwgJyAgICBSZWFkQ29uZmlnLFxuJyArIGVudW1fbWFya2VyLCAxKQoKY2FsbF9tYXJrZXIgPSAnbGV0IGNvbmZpZyA9IG1hdGNoIGxvYWRfY29uZmlnKCkgeycKaWYgY2FsbF9tYXJrZXIgbm90IGluIGw6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCdFUlJPUjogbG9hZF9jb25maWcgY2FsbCBub3QgZm91bmQnKQpsID0gbC5yZXBsYWNlKGNhbGxfbWFya2VyLCAnbGV0IGNvbmZpZyA9IG1hdGNoIGxvYWRfY29uZmlnX3ZpYV9jb21wYW5pb24oYXBpKSB7JywgMSkKCnBhdHRlcm4gPSByZS5jb21waWxlKAogICAgcidmbiBsb2FkX2NvbmZpZ1woXCkgLT4gYW55aG93OjpSZXN1bHQ8T3B0aW9uPENvbmZpZz4+IFx7XG4uKj9cblx9XG4oPz1cbj9mbiBjb25maWd1cmVfbG9nX2xldmVsKScsCiAgICByZS5TLAopCnJlcGxhY2VtZW50ID0gJycnZm4gbG9hZF9jb25maWdfdmlhX2NvbXBhbmlvbigKICAgIGFwaTogJm11dCBaeWdpc2tBcGk8VjQ+LAopIC0+IGFueWhvdzo6UmVzdWx0PE9wdGlvbjxDb25maWc+PiB7CiAgICBsZXQgcmVxdWVzdCA9IGNvbXBhbmlvbjo6Q29tcGFuaW9uUmVxdWVzdDo6UmVhZENvbmZpZzsKICAgIGxldCByZXNwb25zZSA9IGNvbXBhbmlvbjo6c2VuZF9jb21wYW5pb25fY29tbWFuZChhcGksICZyZXF1ZXN0KT87CgogICAgaWYgcmVzcG9uc2Uuc3RhdHVzICE9IDAgewogICAgICAgIGFueWhvdzo6YmFpbCEoCiAgICAgICAgICAgICJ7fSIsCiAgICAgICAgICAgIHJlc3BvbnNlCiAgICAgICAgICAgICAgICAubWVzc2FnZQogICAgICAgICAgICAgICAgLmFzX2RlcmVmKCkKICAgICAgICAgICAgICAgIC51bndyYXBfb3IoImNvbXBhbmlvbiBjb25maWcgcmVhZCBmYWlsZWQiKQogICAgICAgICk7CiAgICB9CgogICAgbGV0IFNvbWUoY29uZmlnX2NvbnRlbnQpID0gcmVzcG9uc2UubWVzc2FnZSBlbHNlIHsKICAgICAgICByZXR1cm4gT2soTm9uZSk7CiAgICB9OwoKICAgIGxldCBjb25maWcgPSBDb25maWc6OmZyb21fdG9tbCgmY29uZmlnX2NvbnRlbnQpPzsKICAgIE9rKFNvbWUoY29uZmlnKSkKfQonJycKbCwgY291bnQgPSBwYXR0ZXJuLnN1Ym4ocmVwbGFjZW1lbnQsIGwsIGNvdW50PTEpCmlmIGNvdW50ICE9IDE6CiAgICByYWlzZSBTeXN0ZW1FeGl0KGYnRVJST1I6IGxvYWRfY29uZmlnIGZ1bmN0aW9uIHJlcGxhY2VtZW50IGNvdW50PXtjb3VudH0nKQoKbCA9IGwucmVwbGFjZSgndXNlIHN0ZDo6e2NvbGxlY3Rpb25zOjpIYXNoTWFwLCBmcywgcGF0aDo6UGF0aH07JywgJ3VzZSBzdGQ6OmNvbGxlY3Rpb25zOjpIYXNoTWFwOycsIDEpCmwgPSBsLnJlcGxhY2UoJ3VzZSBhbnlob3c6OkNvbnRleHQ7XG4nLCAnJywgMSkKbCA9IGwucmVwbGFjZSgnY29uc3QgQ09ORklHX1BBVEg6ICZzdHIgPSAiL2RhdGEvYWRiL2RldmljZV9mYWtlci9jb25maWcvY29uZmlnLnRvbWwiO1xuJywgJycsIDEpCgpjb21wYW5pb25fcGF0aC53cml0ZV90ZXh0KGMsIGVuY29kaW5nPSd1dGYtOCcpCmxpYl9wYXRoLndyaXRlX3RleHQobCwgZW5jb2Rpbmc9J3V0Zi04JykKcHJpbnQoJ1NhbXN1bmcgREVGRVggd29ya2Fyb3VuZCBhcHBsaWVkIHN1Y2Nlc3NmdWxseS4nKQo=' | base64 -d > /tmp/apply_defex.py
+          python3 /tmp/apply_defex.py
           git diff --check
           git diff -- src/companion.rs src/lib.rs
 
@@ -134,7 +26,7 @@ jobs:
         run: |
           sed -i 's/^name=.*/name=Device Faker Samsung DEFEX/' module/module.prop
           sed -i 's/^version=.*/version=v1.5.0-samsung-defex/' module/module.prop
-          sed -i 's/^versionCode=.*/versionCode=2026082304/' module/module.prop
+          sed -i 's/^versionCode=.*/versionCode=2026082306/' module/module.prop
           sed -i '/^updateJson=/d' module/module.prop
           cat module/module.prop
 
@@ -167,14 +59,11 @@ jobs:
       - name: Build installable release ZIP
         run: |
           cargo run --package xtask -- build -r
-          echo "===== output files ====="
+          echo '===== output files ====='
           find output -maxdepth 2 -type f -print || true
-
           test -f 'output/device_faker-(release).zip'
-          cp 'output/device_faker-(release).zip' \
-             'output/Device_Faker_Samsung_DEFEX.zip'
-
-          echo "===== ZIP contents ====="
+          cp 'output/device_faker-(release).zip' 'output/Device_Faker_Samsung_DEFEX.zip'
+          echo '===== ZIP contents ====='
           unzip -l 'output/Device_Faker_Samsung_DEFEX.zip' | head -100
 
       - name: Upload KernelSU install ZIP
