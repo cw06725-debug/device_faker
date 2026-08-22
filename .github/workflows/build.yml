@@ -10,14 +10,18 @@ jobs:
       - name: Checkout fork
         uses: actions/checkout@v5
 
-      - name: Checkout v1.5.0 baseline
+      - name: Preserve Samsung DEFEX patch
+        run: |
+          cp samsung-defex/device_faker_v1.5.0_samsung_defex.patch /tmp/device_faker_samsung_defex.patch
+
+      - name: Checkout upstream v1.5.0 baseline
         run: |
           git fetch --tags --force
           git checkout v1.5.0
 
       - name: Apply Samsung DEFEX patch
         run: |
-          patch -p1 < samsung-defex/device_faker_v1.5.0_samsung_defex.patch
+          patch -p1 < /tmp/device_faker_samsung_defex.patch
 
       - name: Mark Samsung test build
         run: |
@@ -66,4 +70,3 @@ jobs:
           name: Device_Faker_v1.5.0_Samsung_DEFEX
           path: output/Device_Faker_v1.5.0_Samsung_DEFEX.zip
           if-no-files-found: error
-
