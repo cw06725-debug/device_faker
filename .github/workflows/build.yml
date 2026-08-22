@@ -16,68 +16,54 @@ jobs:
 
       - name: Show source revision
         run: |
+          echo "===== Git revision ====="
           git rev-parse HEAD
           git status --short
-          ls -l samsung-defex/
+          echo
+          echo "===== samsung-defex directory ====="
+          ls -la samsung-defex || true
 
-      - name: Check Samsung DEFEX patch
+      - name: Show Samsung DEFEX source context
         run: |
-          git apply --check samsung-defex/device_faker_samsung_defex_v2.patch
-      - name: Apply Samsung DEFEX patch
+          echo "========================================"
+          echo "===== companion request handler ====="
+          echo "========================================"
+          grep -n -A 20 -B 20 "CompanionRequest::CpuSpoofUnmount" src/companion.rs || true
+
+          echo
+          echo "========================================"
+          echo "===== CompanionRequest enum ====="
+          echo "========================================"
+          grep -n -A 40 -B 15 "enum CompanionRequest" src/companion.rs || true
+
+          echo
+          echo "========================================"
+          echo "===== CompanionResponse struct ====="
+          echo "========================================"
+          grep -n -A 40 -B 15 "struct CompanionResponse" src/companion.rs || true
+
+          echo
+          echo "========================================"
+          echo "===== load_config call ====="
+          echo "========================================"
+          grep -n -A 25 -B 25 "load_config" src/lib.rs || true
+
+          echo
+          echo "========================================"
+          echo "===== CONFIG_PATH ====="
+          echo "========================================"
+          grep -n -A 20 -B 20 "CONFIG_PATH" src/lib.rs || true
+
+          echo
+          echo "========================================"
+          echo "===== send_companion_command ====="
+          echo "========================================"
+          grep -n -A 25 -B 25 "send_companion_command" src/companion.rs || true
+
+      - name: Stop after source dump
         run: |
-          git apply samsung-defex/device_faker_samsung_defex_v2.patch
-          git diff --check
-          git diff --stat
-
-      - name: Mark Samsung test build
-        run: |
-          if [ -f module/module.prop ]; then
-            sed -i 's/^name=.*/name=Device Faker Samsung DEFEX/' module/module.prop
-            sed -i 's/^version=.*/version=v1.5.0-samsung-defex-main/' module/module.prop
-            sed -i 's/^versionCode=.*/versionCode=2026082302/' module/module.prop
-            sed -i '/^updateJson=/d' module/module.prop
-          fi
-
-      - name: Setup Android NDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r29
-          add-to-path: true
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: nightly
-          components: rust-src
-          targets: aarch64-linux-android
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 'lts/*'
-          cache: npm
-          cache-dependency-path: webui/package-lock.json
-
-      - name: Install build dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y gcc-multilib
-          cargo install cargo-ndk --locked
-
-      - name: Build installable release ZIP
-        run: |
-          cargo run --package xtask -- build -r
-          echo "=== output ==="
-          find output -maxdepth 2 -type f -print
-          test -f 'output/device_faker-(release).zip'
-          cp 'output/device_faker-(release).zip' \
-             'output/Device_Faker_Samsung_DEFEX_main.zip'
-          unzip -l 'output/Device_Faker_Samsung_DEFEX_main.zip' | head -80
-
-      - name: Upload KernelSU install ZIP
-        uses: actions/upload-artifact@v6
-        with:
-          name: Device_Faker_Samsung_DEFEX_main
-          path: output/Device_Faker_Samsung_DEFEX_main.zip
-          if-no-files-found: error
-
+          echo "Source context collected successfully."
+          echo "Please inspect the output of:"
+          echo "Show Samsung DEFEX source context"
+          echo
+          echo "Do not continue to build yet."
